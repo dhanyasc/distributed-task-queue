@@ -1,0 +1,138 @@
+version: "3.9"
+
+services:
+  # ── API Server ───────────────────────────────────────────────────────────
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    container_name: taskqueue-api
+    ports:
+      - "8000:8000"
+    environment:
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - DATABASE_URL=postgresql://taskqueue:taskqueue@postgres:5432/taskqueue
+    depends_on:
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    networks:
+      - taskqueue
+    restart: unless-stopped
+
+  # ── Worker Nodes ─────────────────────────────────────────────────────────
+  worker-1:
+    build:
+      context: .
+      dockerfile: Dockerfile.worker
+    container_name: taskqueue-worker-1
+    environment:
+      - REDIS_HOST=redis
+      - DATABASE_URL=postgresql://taskqueue:taskqueue@postgres:5432/taskqueue
+      - WORKER_ID=worker-1
+    depends_on:
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    networks:
+      - taskqueue
+    restart: unless-stopped
+
+  worker-2:
+    build:
+      context: .
+      dockerfile: Dockerfile.worker
+    container_name: taskqueue-worker-2
+    environment:
+      - REDIS_HOST=redis
+      - DATABASE_URL=postgresql://taskqueue:taskqueue@postgres:5432/taskqueue
+      - WORKER_ID=worker-2
+    depends_on:
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    networks:
+      - taskqueue
+    restart: unless-stopped
+
+  # ── Redis ────────────────────────────────────────────────────────────────
+  redis:
+    image: redis:7-alpine
+    container_name: taskqueue-redis
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+    volumes:
+      - redis_data:/data
+    networks:
+      - taskqueue
+    restart: unless-stopped
+
+  # ── PostgreSQL ───────────────────────────────────────────────────────────
+  postgres:
+    image: postgres:16-alpine
+    container_name: taskqueue-postgres
+    ports:
+      - "5432:5432"
+    environment:
+      - POSTGRES_USER=taskqueue
+      - POSTGRES_PASSWORD=taskqueue
+      - POSTGRES_DB=taskqueue
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U taskqueue"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - taskqueue
+    restart: unless-stopped
+
+  # ── Prometheus ───────────────────────────────────────────────────────────
+  prometheus:
+    image: prom/prometheus:v2.51.0
+    container_name: taskqueue-prometheus
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml
+      - prometheus_data:/prometheus
+    ports:
+      - "9090:9090"
+    networks:
+      - taskqueue
+    restart: unless-stopped
+
+  # ── Grafana ──────────────────────────────────────────────────────────────
+  grafana:
+    image: grafana/grafana:10.4.0
+    container_name: taskqueue-grafana
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning
+      - ./monitoring/grafana/dashboards:/var/lib/grafana/dashboards
+    networks:
+      - taskqueue
+    restart: unless-stopped
+
+volumes:
+  redis_data:
+  postgres_data:
+  prometheus_data:
+  grafana_data:
+
+networks:
+  taskqueue:
+    driver: bridge
