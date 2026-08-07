@@ -4,30 +4,24 @@ FastAPI service that accepts jobs, queues through Redis, processes with workers,
 stores results in PostgreSQL, with full Prometheus observability.
 """
 
+from __future__ import annotations
+
 import os
 import uuid
-import time
-import json
-from datetime import datetime, timezone
-from typing import Optional, List
+from datetime import UTC, datetime
 
-from fastapi import FastAPI, HTTPException, Depends, status
-from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, Field
 import uvicorn
-
-from db import get_db, init_db, TaskRecord
-from queue_client import RedisQueue
+from db import TaskRecord, get_db, init_db
+from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from metrics import (
-    MetricsMiddleware,
-    TASKS_SUBMITTED,
-    TASKS_COMPLETED,
-    TASKS_FAILED,
     TASK_QUEUE_SIZE,
-    TASK_PROCESSING_TIME,
-    ACTIVE_WORKERS,
+    TASKS_SUBMITTED,
+    MetricsMiddleware,
     metrics_endpoint,
 )
+from pydantic import BaseModel, Field
+from queue_client import RedisQueue
 
 # ---------------------------------------------------------------------------
 # App
@@ -54,7 +48,7 @@ app.add_middleware(MetricsMiddleware)
 
 redis_queue = RedisQueue(
     host=os.getenv("REDIS_HOST", "redis"),
-    port=int(os.getenv("REDIS_PORT", 6379)),
+    port=int(os.getenv("REDIS_PORT", "6379")),
     queue_name=os.getenv("QUEUE_NAME", "task_queue"),
 )
 
@@ -62,24 +56,28 @@ redis_queue = RedisQueue(
 # Schemas
 # ---------------------------------------------------------------------------
 
+
 class TaskSubmit(BaseModel):
     task_type: str = Field(..., description="Type of task: 'ml_inference', 'data_processing', 'text_analysis'")
     payload: dict = Field(..., description="Task-specific payload data")
     priority: int = Field(default=5, ge=1, le=10, description="Priority 1 (lowest) to 10 (highest)")
-    callback_url: Optional[str] = Field(default=None, description="Webhook URL for completion notification")
+    callback_url: str | None = Field(default=None, description="Webhook URL for completion notification")
+
 
 class TaskResponse(BaseModel):
     task_id: str
     status: str
     task_type: str
     created_at: str
-    result: Optional[dict] = None
-    error: Optional[str] = None
-    processing_time_ms: Optional[float] = None
+    result: dict | None = None
+    error: str | None = None
+    processing_time_ms: float | None = None
+
 
 class TaskListResponse(BaseModel):
-    tasks: List[TaskResponse]
+    tasks: list[TaskResponse]
     total: int
+
 
 class QueueStats(BaseModel):
     pending: int
@@ -88,17 +86,21 @@ class QueueStats(BaseModel):
     failed: int
     avg_processing_time_ms: float
 
+
 # ---------------------------------------------------------------------------
 # Startup
 # ---------------------------------------------------------------------------
+
 
 @app.on_event("startup")
 async def startup():
     init_db()
 
+
 # ---------------------------------------------------------------------------
 # Health
 # ---------------------------------------------------------------------------
+
 
 @app.get("/health", tags=["health"])
 async def health():
@@ -118,23 +120,27 @@ async def readiness():
         raise HTTPException(status_code=503, detail="Redis not ready")
     return {"ready": True}
 
+
 # ---------------------------------------------------------------------------
 # Metrics
 # ---------------------------------------------------------------------------
+
 
 @app.get("/metrics", tags=["monitoring"])
 async def prometheus_metrics():
     return metrics_endpoint()
 
+
 # ---------------------------------------------------------------------------
 # Task endpoints
 # ---------------------------------------------------------------------------
+
 
 @app.post("/tasks", response_model=TaskResponse, status_code=201, tags=["tasks"])
 async def submit_task(task: TaskSubmit):
     """Submit a new task to the processing queue."""
     task_id = str(uuid.uuid4())
-    now = datetime.now(timezone.utc).isoformat()
+    now = datetime.now(UTC).isoformat()
 
     record = TaskRecord(
         task_id=task_id,
@@ -191,8 +197,8 @@ async def get_task(task_id: str):
 
 @app.get("/tasks", response_model=TaskListResponse, tags=["tasks"])
 async def list_tasks(
-    status: Optional[str] = None,
-    task_type: Optional[str] = None,
+    status: str | None = None,
+    task_type: str | None = None,
     limit: int = 50,
     offset: int = 0,
 ):
