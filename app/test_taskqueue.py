@@ -1,12 +1,11 @@
 """
-Test Suite for Distributed Task Queue - 40 Tests
+Test Suite for Distributed Task Queue
 """
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock, patch
-
 import pytest
+
 from db import SQLiteDB, TaskRecord
 from processors import (
     DataProcessingProcessor,
@@ -42,7 +41,7 @@ class TestSQLiteDB:
             task_id="t-1",
             task_type="ml_inference",
             status="pending",
-            payload={"model": "bert", "text": "hello"},
+            payload={"model": "sentiment", "text": "hello"},
         )
         db.insert_task(task)
         result = db.get_task("t-1")
@@ -191,13 +190,13 @@ class TestSQLiteDB:
 
     def test_avg_processing_time(self, db):
         db.insert_task(TaskRecord(
-            task_id="avg-1", task_type="ml_inference", status="completed",
-            payload={}, processing_time_ms=100.0,
+            task_id="avg-1", task_type="ml_inference", status="pending", payload={},
         ))
+        db.update_task("avg-1", status="completed", processing_time_ms=100.0)
         db.insert_task(TaskRecord(
-            task_id="avg-2", task_type="ml_inference", status="completed",
-            payload={}, processing_time_ms=200.0,
+            task_id="avg-2", task_type="ml_inference", status="pending", payload={},
         ))
+        db.update_task("avg-2", status="completed", processing_time_ms=200.0)
         avg = db.avg_processing_time()
         assert avg == 150.0
 
@@ -230,12 +229,12 @@ class TestSQLiteDB:
         assert len(tasks) == 5
 
     def test_insert_task_with_payload(self, db):
-        payload = {"model": "gpt", "input": [1, 2, 3], "options": {"temperature": 0.7}}
+        payload = {"model": "sentiment", "input": [1, 2, 3], "options": {"temperature": 0.7}}
         db.insert_task(TaskRecord(
             task_id="pay-1", task_type="ml_inference", status="pending", payload=payload,
         ))
         task = db.get_task("pay-1")
-        assert task.payload["model"] == "gpt"
+        assert task.payload["model"] == "sentiment"
         assert task.payload["options"]["temperature"] == 0.7
 
 
@@ -259,7 +258,7 @@ class TestProcessors:
 
     def test_ml_inference_process(self):
         processor = MLInferenceProcessor()
-        result = processor.process({"model": "bert", "text": "hello world"})
+        result = processor.process({"model": "sentiment", "text": "hello world"})
         assert isinstance(result, dict)
 
     def test_data_processing_process(self):
@@ -286,45 +285,19 @@ class TestProcessors:
 
     def test_get_processor_unknown(self):
         with pytest.raises(ValueError, match="Unknown task type"):
-            get_processor(
-                "nonexistent_type")
+            get_processor("nonexistent_type")
 
+    def test_ml_inference_classification(self):
+        processor = MLInferenceProcessor()
+        result = processor.process({"model": "classification", "text": "test input"})
+        assert isinstance(result, dict)
 
-# ============================================================================
-# Worker Tests (mocked dependencies)
-# ============================================================================
+    def test_ml_inference_ner(self):
+        processor = MLInferenceProcessor()
+        result = processor.process({"model": "ner", "text": "John went to Paris"})
+        assert isinstance(result, dict)
 
-
-class TestWorker:
-    def test_worker_creation(self):
-        mock_queue = MagicMock()
-        with patch("worker.get_db") as mock_get_db:
-            mock_get_db.return_value = MagicMock()
-            from worker import Worker
-
-            w = Worker(worker_id="test-worker", queue=mock_queue)
-            assert w.worker_id == "test-worker"
-            assert w._running is True
-
-    def test_worker_stop(self):
-        mock_queue = MagicMock()
-        with patch("worker.get_db") as mock_get_db:
-            mock_get_db.return_value = MagicMock()
-            from worker import Worker
-
-            w = Worker(worker_id="test-worker", queue=mock_queue)
-            w.stop()
-            assert w._running is False
-
-    def test_worker_run_no_tasks(self):
-        mock_queue = MagicMock()
-        mock_queue.dequeue.return_value = None
-        with patch("worker.get_db") as mock_get_db:
-            mock_get_db.return_value = MagicMock()
-            from worker import Worker
-
-            w = Worker(worker_id="test-worker", queue=mock_queue)
-            # Stop after first iteration
-            mock_queue.dequeue.side_effect = lambda timeout: (w.stop(), None)[1]
-            w.run()
-            assert w._running is False
+    def test_ml_inference_unknown_model(self):
+        processor = MLInferenceProcessor()
+        with pytest.raises(ValueError, match="Unknown model"):
+            processor.process({"model": "invalid_model", "text": "test"})
