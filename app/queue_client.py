@@ -3,9 +3,10 @@ Redis Queue client – enqueue/dequeue with priority support.
 Falls back to an in-memory queue when Redis is unavailable (dev/test).
 """
 
+from __future__ import annotations
+
 import json
 import time
-from typing import Optional
 from collections import deque
 
 
@@ -46,13 +47,13 @@ class RedisQueue:
         else:
             self._memory_queue.append(task)
 
-    def dequeue(self, timeout: int = 5) -> Optional[dict]:
+    def dequeue(self, timeout: int = 5) -> dict | None:
         """Pop the highest-priority task. Blocks up to `timeout` seconds."""
         if self._redis:
             # Atomic pop of lowest score (= highest priority)
             result = self._redis.zpopmin(self.queue_name, count=1)
             if result:
-                payload, score = result[0]
+                payload, _score = result[0]
                 return json.loads(payload)
 
             # If nothing, poll with sleep (simple blocking)
@@ -60,7 +61,7 @@ class RedisQueue:
             while time.time() < end:
                 result = self._redis.zpopmin(self.queue_name, count=1)
                 if result:
-                    payload, score = result[0]
+                    payload, _score = result[0]
                     return json.loads(payload)
                 time.sleep(0.2)
             return None
