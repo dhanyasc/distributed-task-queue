@@ -5,7 +5,6 @@ Test Suite for Distributed Task Queue
 from __future__ import annotations
 
 import pytest
-
 from db import SQLiteDB, TaskRecord
 from processors import (
     DataProcessingProcessor,
@@ -13,7 +12,6 @@ from processors import (
     TextAnalysisProcessor,
     get_processor,
 )
-
 
 # ============================================================================
 # Test fixtures
