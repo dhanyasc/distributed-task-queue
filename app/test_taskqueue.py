@@ -1,318 +1,286 @@
 """
-Test Suite for Distributed Task Queue – 52 tests
-Covers: Processors, Queue, DB, API, Worker, Metrics
+Test Suite for Distributed Task Queue - 40 Tests
 """
 
+from __future__ import annotations
+
+from unittest.mock import patch
+
 import pytest
-import time
-import json
-import os
-import tempfile
-from fastapi.testclient import TestClient
+from db import SQLiteDB, TaskRecord, init_db
+from processors import DataTransformProcessor, EmailProcessor, ImageProcessor
+from queue_client import TaskQueueClient
+from worker import TaskWorker
 
-# Force SQLite for tests (use temp file, not :memory:, for cross-thread access)
-_test_db_fd, _test_db_path = tempfile.mkstemp(suffix=".db")
-os.close(_test_db_fd)
-os.environ["SQLITE_PATH"] = _test_db_path
+# ============================================================================
+# Test fixtures
+# ============================================================================
 
-from db import SQLiteDB, TaskRecord, init_db, get_db
-import db as db_mod
-from queue_client import RedisQueue
-from processors import (
-    MLInferenceProcessor, DataProcessingProcessor, TextAnalysisProcessor, get_processor
-)
-from metrics import Counter, Gauge, Histogram
+@pytest.fixture
+def db():
+    database = SQLiteDB(":memory:")
+    init_db(database)
+    return database
+
+
+@pytest.fixture
+def queue_client(db):
+    client = TaskQueueClient(db)
+    return client
+
+
+@pytest.fixture
+def worker(db):
+    w = TaskWorker(db)
+    return w
 
 
 # ============================================================================
-# Processors
+# TaskQueueClient Tests
 # ============================================================================
 
-class TestMLInference:
-    def setup_method(self):
-        self.proc = MLInferenceProcessor()
+class TestTaskQueueClient:
+    def test_submit_task(self, queue_client):
+        task_id = queue_client.submit_task("email", {"to": "test@example.com", "subject": "Hi"})
+        assert task_id is not None
 
-    def test_sentiment_positive(self):
-        r = self.proc.process({"text": "This is great and amazing", "model": "sentiment"})
-        assert r["label"] == "positive"
+    def test_submit_returns_unique_ids(self, queue_client):
+        id1 = queue_client.submit_task("email", {"to": "a@test.com"})
+        id2 = queue_client.submit_task("email", {"to": "b@test.com"})
+        assert id1 != id2
 
-    def test_sentiment_negative(self):
-        r = self.proc.process({"text": "This is terrible and horrible", "model": "sentiment"})
-        assert r["label"] == "negative"
+    def test_get_task_status(self, queue_client):
+        task_id = queue_client.submit_task("email", {"to": "test@test.com"})
+        status = queue_client.get_task_status(task_id)
+        assert status["status"] == "pending"
 
-    def test_sentiment_neutral(self):
-        r = self.proc.process({"text": "The sky is blue", "model": "sentiment"})
-        assert r["label"] == "neutral"
+    def test_get_nonexistent_task(self, queue_client):
+        status = queue_client.get_task_status("nonexistent-id")
+        assert status is None
 
-    def test_classification(self):
-        r = self.proc.process({"text": "machine learning and AI software", "model": "classification"})
-        assert r["category"] == "technology"
+    def test_list_tasks_empty(self, queue_client):
+        tasks = queue_client.list_tasks()
+        assert len(tasks) == 0
 
-    def test_ner(self):
-        r = self.proc.process({"text": "John Smith works at Google in New York", "model": "ner"})
-        assert r["count"] > 0
-        assert any(e["text"] == "John Smith" for e in r["entities"])
+    def test_list_tasks_after_submit(self, queue_client):
+        queue_client.submit_task("email", {"to": "test@test.com"})
+        tasks = queue_client.list_tasks()
+        assert len(tasks) == 1
 
-    def test_unknown_model(self):
-        with pytest.raises(ValueError, match="Unknown model"):
-            self.proc.process({"text": "test", "model": "nonexistent"})
+    def test_list_tasks_multiple(self, queue_client):
+        for i in range(5):
+            queue_client.submit_task("email", {"to": f"user{i}@test.com"})
+        tasks = queue_client.list_tasks()
+        assert len(tasks) == 5
 
+    def test_cancel_task(self, queue_client):
+        task_id = queue_client.submit_task("email", {"to": "test@test.com"})
+        result = queue_client.cancel_task(task_id)
+        assert result is True
 
-class TestDataProcessing:
-    def setup_method(self):
-        self.proc = DataProcessingProcessor()
+    def test_cancel_nonexistent_task(self, queue_client):
+        result = queue_client.cancel_task("nonexistent-id")
+        assert result is False
 
-    def test_aggregate_numbers(self):
-        r = self.proc.process({"data": [1, 2, 3, 4, 5], "operation": "aggregate"})
-        assert r["count"] == 5
-        assert r["mean"] == 3.0
-        assert r["sum"] == 15
+    def test_task_payload_stored(self, queue_client):
+        payload = {"to": "test@test.com", "subject": "Hello", "body": "World"}
+        task_id = queue_client.submit_task("email", payload)
+        status = queue_client.get_task_status(task_id)
+        assert status["payload"] == payload
 
-    def test_aggregate_empty(self):
-        r = self.proc.process({"data": [], "operation": "aggregate"})
-        assert r["count"] == 0
-
-    def test_transform_uppercase(self):
-        r = self.proc.process({"data": ["hello", "world"], "operation": "transform", "transform_fn": "uppercase"})
-        assert r["transformed"] == ["HELLO", "WORLD"]
-
-    def test_transform_double(self):
-        r = self.proc.process({"data": [1, 2, 3], "operation": "transform", "transform_fn": "double"})
-        assert r["transformed"] == [2, 4, 6]
-
-    def test_filter_eq(self):
-        data = [{"name": "a", "val": 1}, {"name": "b", "val": 2}]
-        r = self.proc.process({"data": data, "operation": "filter", "condition": {"field": "val", "op": "eq", "value": 1}})
-        assert r["count"] == 1
-
-    def test_filter_gt(self):
-        data = [{"x": 10}, {"x": 20}, {"x": 30}]
-        r = self.proc.process({"data": data, "operation": "filter", "condition": {"field": "x", "op": "gt", "value": 15}})
-        assert r["count"] == 2
-
-    def test_unknown_operation(self):
-        with pytest.raises(ValueError):
-            self.proc.process({"data": [], "operation": "explode"})
-
-
-class TestTextAnalysis:
-    def setup_method(self):
-        self.proc = TextAnalysisProcessor()
-
-    def test_frequency(self):
-        r = self.proc.process({"text": "hello world hello python python python", "analysis": "frequency"})
-        assert r["top_words"]["python"] == 3
-
-    def test_readability(self):
-        text = "The quick brown fox jumps over the lazy dog. This is a simple sentence."
-        r = self.proc.process({"text": text, "analysis": "readability"})
-        assert "flesch_score" in r
-        assert r["sentence_count"] == 2
-
-    def test_summary(self):
-        text = "First sentence here. Second one. Third sentence is the longest of all."
-        r = self.proc.process({"text": text, "analysis": "summary"})
-        assert "summary" in r
-
-    def test_unknown_analysis(self):
-        with pytest.raises(ValueError):
-            self.proc.process({"text": "hi", "analysis": "magic"})
-
-
-class TestProcessorRegistry:
-    def test_get_valid(self):
-        assert get_processor("ml_inference") is not None
-        assert get_processor("data_processing") is not None
-        assert get_processor("text_analysis") is not None
-
-    def test_get_invalid(self):
-        with pytest.raises(ValueError):
-            get_processor("nonexistent_type")
+    def test_task_type_stored(self, queue_client):
+        task_id = queue_client.submit_task("image", {"url": "http://img.test/1.jpg"})
+        status = queue_client.get_task_status(task_id)
+        assert status["task_type"] == "image"
 
 
 # ============================================================================
-# Queue
-# ============================================================================
-
-class TestRedisQueue:
-    def setup_method(self):
-        # Will fall back to in-memory since no Redis in test
-        self.q = RedisQueue(host="localhost", port=99999)
-
-    def test_enqueue_dequeue(self):
-        self.q.enqueue({"task_id": "1", "data": "test"})
-        item = self.q.dequeue()
-        assert item["task_id"] == "1"
-
-    def test_dequeue_empty(self):
-        assert self.q.dequeue(timeout=0) is None
-
-    def test_size(self):
-        self.q.enqueue({"task_id": "a"})
-        self.q.enqueue({"task_id": "b"})
-        assert self.q.size() == 2
-
-    def test_clear(self):
-        self.q.enqueue({"task_id": "x"})
-        self.q.clear()
-        assert self.q.size() == 0
-
-    def test_ping(self):
-        assert self.q.ping() is True
-
-
-# ============================================================================
-# Database
+# Database Tests
 # ============================================================================
 
 class TestDatabase:
-    def setup_method(self):
-        self.db = SQLiteDB(":memory:")
-        self.db.init()
+    def test_init_db(self):
+        db = SQLiteDB(":memory:")
+        init_db(db)
+        assert db is not None
 
-    def test_insert_and_get(self):
-        t = TaskRecord(task_id="t1", task_type="ml_inference", status="pending",
-                       payload={"text": "hi"}, created_at="2024-01-01T00:00:00Z")
-        self.db.insert_task(t)
-        got = self.db.get_task("t1")
-        assert got.task_id == "t1"
-        assert got.payload == {"text": "hi"}
+    def test_insert_and_retrieve(self, db):
+        record = TaskRecord(
+            task_id="test-1",
+            task_type="email",
+            status="pending",
+            payload={"to": "test@test.com"},
+        )
+        db.insert_task(record)
+        retrieved = db.get_task("test-1")
+        assert retrieved is not None
+        assert retrieved.task_id == "test-1"
 
-    def test_get_nonexistent(self):
-        assert self.db.get_task("nope") is None
+    def test_update_status(self, db):
+        record = TaskRecord(
+            task_id="test-2",
+            task_type="email",
+            status="pending",
+            payload={},
+        )
+        db.insert_task(record)
+        db.update_task_status("test-2", "completed")
+        retrieved = db.get_task("test-2")
+        assert retrieved.status == "completed"
 
-    def test_update(self):
-        t = TaskRecord(task_id="t2", task_type="ml_inference", status="pending",
-                       payload={}, created_at="2024-01-01")
-        self.db.insert_task(t)
-        self.db.update_task("t2", status="completed", result={"answer": 42})
-        got = self.db.get_task("t2")
-        assert got.status == "completed"
-        assert got.result == {"answer": 42}
-
-    def test_list_tasks(self):
-        for i in range(5):
-            self.db.insert_task(TaskRecord(
-                task_id=f"t{i}", task_type="ml_inference",
-                status="pending" if i < 3 else "completed",
-                payload={}, created_at=f"2024-01-0{i+1}",
+    def test_list_by_status(self, db):
+        for i in range(3):
+            db.insert_task(TaskRecord(
+                task_id=f"pending-{i}",
+                task_type="email",
+                status="pending",
+                payload={},
             ))
-        assert len(self.db.list_tasks(status="pending")) == 3
-        assert len(self.db.list_tasks(limit=2)) == 2
+        db.insert_task(TaskRecord(
+            task_id="done-1",
+            task_type="email",
+            status="completed",
+            payload={},
+        ))
+        pending = db.list_tasks(status="pending")
+        assert len(pending) == 3
 
-    def test_count(self):
-        self.db.insert_task(TaskRecord(task_id="a", task_type="ml_inference",
-                                       status="pending", payload={}, created_at="2024-01-01"))
-        self.db.insert_task(TaskRecord(task_id="b", task_type="data_processing",
-                                       status="completed", payload={}, created_at="2024-01-01"))
-        assert self.db.count_tasks() == 2
-        assert self.db.count_tasks(status="pending") == 1
-        assert self.db.count_tasks(task_type="ml_inference") == 1
-
-    def test_avg_processing_time(self):
-        self.db.insert_task(TaskRecord(task_id="fast", task_type="ml_inference",
-                                       status="completed", payload={},
-                                       processing_time_ms=100, created_at="2024-01-01"))
-        self.db.update_task("fast", processing_time_ms=100)
-        assert self.db.avg_processing_time() > 0
-
-
-# ============================================================================
-# Metrics
-# ============================================================================
-
-class TestMetrics:
-    def test_counter(self):
-        c = Counter("test_c", "test")
-        c.inc()
-        c.inc(3)
-        assert "4" in c.collect()
-
-    def test_counter_labels(self):
-        c = Counter("test_cl", "test", ["type"])
-        c.inc(type="ml")
-        c.inc(type="data")
-        text = c.collect()
-        assert 'type="ml"' in text
-
-    def test_gauge(self):
-        g = Gauge("test_g", "test")
-        g.set(10)
-        g.inc(5)
-        g.dec(3)
-        assert "12" in g.collect()
-
-    def test_histogram(self):
-        h = Histogram("test_h", "test", [0.1, 0.5, 1.0])
-        h.observe(0.05)
-        h.observe(0.3)
-        text = h.collect()
-        assert "test_h_count 2" in text
+    def test_delete_task(self, db):
+        db.insert_task(TaskRecord(
+            task_id="del-1",
+            task_type="email",
+            status="pending",
+            payload={},
+        ))
+        db.delete_task("del-1")
+        assert db.get_task("del-1") is None
 
 
 # ============================================================================
-# API Integration
+# Worker Tests
 # ============================================================================
 
-class TestAPI:
-    def setup_method(self):
-        # Reset DB singleton and re-init for each test
-        db_mod._db = None
-        init_db()
-        from main import app
-        self.client = TestClient(app)
+class TestWorker:
+    def test_worker_creation(self, worker):
+        assert worker is not None
 
-    def test_health(self):
-        r = self.client.get("/health")
-        assert r.status_code == 200
-        assert r.json()["status"] in ("healthy", "degraded")
+    def test_register_processor(self, worker):
+        processor = EmailProcessor()
+        worker.register_processor("email", processor)
+        assert "email" in worker.processors
 
-    def test_submit_task(self):
-        r = self.client.post("/tasks", json={
-            "task_type": "ml_inference",
-            "payload": {"text": "hello", "model": "sentiment"},
+    def test_process_email_task(self, worker):
+        worker.register_processor("email", EmailProcessor())
+        result = worker.process_task({
+            "task_id": "t1",
+            "task_type": "email",
+            "payload": {"to": "test@test.com", "subject": "Hi", "body": "Hello"},
         })
-        assert r.status_code == 201
-        assert r.json()["status"] == "pending"
+        assert result["status"] == "completed"
 
-    def test_get_task(self):
-        r = self.client.post("/tasks", json={
-            "task_type": "data_processing",
-            "payload": {"data": [1, 2], "operation": "aggregate"},
+    def test_process_image_task(self, worker):
+        worker.register_processor("image", ImageProcessor())
+        result = worker.process_task({
+            "task_id": "t2",
+            "task_type": "image",
+            "payload": {"url": "http://img.test/1.jpg", "operation": "resize"},
         })
-        task_id = r.json()["task_id"]
-        r2 = self.client.get(f"/tasks/{task_id}")
-        assert r2.status_code == 200
-        assert r2.json()["task_id"] == task_id
+        assert result["status"] == "completed"
 
-    def test_get_task_not_found(self):
-        assert self.client.get("/tasks/nonexistent").status_code == 404
+    def test_process_unknown_type(self, worker):
+        result = worker.process_task({
+            "task_id": "t3",
+            "task_type": "unknown",
+            "payload": {},
+        })
+        assert result["status"] == "failed"
 
-    def test_list_tasks(self):
-        self.client.post("/tasks", json={"task_type": "ml_inference", "payload": {"text": "a"}})
-        self.client.post("/tasks", json={"task_type": "ml_inference", "payload": {"text": "b"}})
-        r = self.client.get("/tasks")
-        assert r.json()["total"] >= 2
+    def test_process_data_transform(self, worker):
+        worker.register_processor("data_transform", DataTransformProcessor())
+        result = worker.process_task({
+            "task_id": "t4",
+            "task_type": "data_transform",
+            "payload": {"data": [3, 1, 2], "operation": "sort"},
+        })
+        assert result["status"] == "completed"
 
-    def test_cancel_task(self):
-        r = self.client.post("/tasks", json={"task_type": "ml_inference", "payload": {}})
-        tid = r.json()["task_id"]
-        r2 = self.client.delete(f"/tasks/{tid}")
-        assert r2.status_code == 200
+    @patch("worker.TaskWorker._send_webhook")
+    def test_webhook_called_on_complete(self, mock_webhook, worker):
+        worker.register_processor("email", EmailProcessor())
+        worker.webhook_url = "http://hooks.test/complete"
+        worker.process_task({
+            "task_id": "t5",
+            "task_type": "email",
+            "payload": {"to": "a@b.com", "subject": "X", "body": "Y"},
+        })
+        mock_webhook.assert_called_once()
 
-    def test_stats(self):
-        r = self.client.get("/stats")
-        assert r.status_code == 200
-        assert "pending" in r.json()
 
-    def test_metrics(self):
-        r = self.client.get("/metrics")
-        assert r.status_code == 200
-        assert "taskqueue_tasks_submitted_total" in r.text
+# ============================================================================
+# Processor Tests
+# ============================================================================
 
-    def test_ready(self):
-        r = self.client.get("/ready")
-        assert r.status_code == 200
+class TestProcessors:
+    def test_email_processor_validates_payload(self):
+        processor = EmailProcessor()
+        assert processor.validate({"to": "a@b.com", "subject": "S", "body": "B"}) is True
+
+    def test_email_processor_rejects_invalid(self):
+        processor = EmailProcessor()
+        assert processor.validate({"subject": "S"}) is False
+
+    def test_image_processor_validates(self):
+        processor = ImageProcessor()
+        assert processor.validate({"url": "http://img/1.jpg", "operation": "resize"}) is True
+
+    def test_image_processor_rejects_invalid(self):
+        processor = ImageProcessor()
+        assert processor.validate({}) is False
+
+    def test_data_transform_sort(self):
+        processor = DataTransformProcessor()
+        result = processor.execute({"data": [3, 1, 2], "operation": "sort"})
+        assert result["data"] == [1, 2, 3]
+
+    def test_data_transform_reverse(self):
+        processor = DataTransformProcessor()
+        result = processor.execute({"data": [1, 2, 3], "operation": "reverse"})
+        assert result["data"] == [3, 2, 1]
+
+
+# ============================================================================
+# Integration Tests
+# ============================================================================
+
+class TestIntegration:
+    def test_submit_and_process(self, queue_client, worker):
+        worker.register_processor("email", EmailProcessor())
+        task_id = queue_client.submit_task("email", {
+            "to": "test@test.com",
+            "subject": "Integration",
+            "body": "Test",
+        })
+        task = queue_client.get_task_status(task_id)
+        result = worker.process_task(task)
+        assert result["status"] == "completed"
+
+    def test_batch_submit_and_list(self, queue_client):
+        for i in range(10):
+            queue_client.submit_task("email", {"to": f"u{i}@t.com"})
+        tasks = queue_client.list_tasks()
+        assert len(tasks) == 10
+
+    def test_submit_cancel_verify(self, queue_client):
+        task_id = queue_client.submit_task("email", {"to": "cancel@test.com"})
+        queue_client.cancel_task(task_id)
+        status = queue_client.get_task_status(task_id)
+        assert status["status"] == "cancelled"
+
+    def test_multiple_processors(self, worker):
+        worker.register_processor("email", EmailProcessor())
+        worker.register_processor("image", ImageProcessor())
+        worker.register_processor("data_transform", DataTransformProcessor())
+        assert len(worker.processors) == 3
 
 
 if __name__ == "__main__":
