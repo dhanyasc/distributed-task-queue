@@ -8,27 +8,28 @@ Usage:
     WORKER_ID=worker-1 python worker.py  # named worker for observability
 """
 
-import os
-import sys
-import time
-import json
-import uuid
-import signal
+from __future__ import annotations
+
 import argparse
+import json
+import os
+import signal
+import sys
 import threading
-from datetime import datetime, timezone
-from typing import Optional
+import time
+import uuid
+from datetime import UTC, datetime
 
 from db import get_db, init_db
-from queue_client import RedisQueue
 from metrics import (
+    ACTIVE_WORKERS,
+    TASK_PROCESSING_TIME,
+    TASK_QUEUE_SIZE,
     TASKS_COMPLETED,
     TASKS_FAILED,
-    TASK_QUEUE_SIZE,
-    TASK_PROCESSING_TIME,
-    ACTIVE_WORKERS,
 )
 from processors import get_processor
+from queue_client import RedisQueue
 
 
 class Worker:
@@ -62,7 +63,7 @@ class Worker:
                     task_id,
                     status="processing",
                     worker_id=self.worker_id,
-                    started_at=datetime.now(timezone.utc).isoformat(),
+                    started_at=datetime.now(UTC).isoformat(),
                 )
                 TASK_QUEUE_SIZE.dec()
 
@@ -76,13 +77,14 @@ class Worker:
                         task_id,
                         status="completed",
                         result=result,
-                        completed_at=datetime.now(timezone.utc).isoformat(),
+                        completed_at=datetime.now(UTC).isoformat(),
                         processing_time_ms=elapsed_ms,
                     )
 
                     TASKS_COMPLETED.inc(task_type=task_type)
                     TASK_PROCESSING_TIME.observe(elapsed_ms / 1000)
-                    print(f"[{self.worker_id}] Completed {task_id} in {elapsed_ms:.0f}ms")
+                    msg = f"[{self.worker_id}] Completed {task_id} in {elapsed_ms:.0f}ms"
+                    print(msg)
 
                     # Callback if configured
                     if task.get("callback_url"):
@@ -94,7 +96,7 @@ class Worker:
                         task_id,
                         status="failed",
                         error=str(e),
-                        completed_at=datetime.now(timezone.utc).isoformat(),
+                        completed_at=datetime.now(UTC).isoformat(),
                         processing_time_ms=elapsed_ms,
                     )
                     TASKS_FAILED.inc(task_type=task_type)
@@ -108,7 +110,8 @@ class Worker:
         try:
             import urllib.request
             data = json.dumps({"task_id": task_id, "result": result}).encode()
-            req = urllib.request.Request(url, data=data, headers={"Content-Type": "application/json"})
+            headers = {"Content-Type": "application/json"}
+            req = urllib.request.Request(url, data=data, headers=headers)
             urllib.request.urlopen(req, timeout=10)
         except Exception as e:
             print(f"[{self.worker_id}] Callback failed for {task_id}: {e}")
@@ -116,14 +119,16 @@ class Worker:
 
 def main():
     parser = argparse.ArgumentParser(description="Task queue worker")
-    parser.add_argument("--workers", type=int, default=1, help="Number of worker threads")
+    parser.add_argument(
+        "--workers", type=int, default=1, help="Number of worker threads",
+    )
     args = parser.parse_args()
 
     init_db()
 
     queue = RedisQueue(
         host=os.getenv("REDIS_HOST", "redis"),
-        port=int(os.getenv("REDIS_PORT", 6379)),
+        port=int(os.getenv("REDIS_PORT", "6379")),
     )
 
     workers = []
