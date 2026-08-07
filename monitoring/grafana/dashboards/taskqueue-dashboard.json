@@ -1,0 +1,101 @@
+{
+  "annotations": { "list": [] },
+  "editable": true,
+  "panels": [
+    {
+      "title": "Task Processing Latency (p50/p95/p99)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+      "targets": [
+        { "expr": "histogram_quantile(0.50, rate(taskqueue_processing_duration_seconds_bucket[5m]))", "legendFormat": "p50" },
+        { "expr": "histogram_quantile(0.95, rate(taskqueue_processing_duration_seconds_bucket[5m]))", "legendFormat": "p95" },
+        { "expr": "histogram_quantile(0.99, rate(taskqueue_processing_duration_seconds_bucket[5m]))", "legendFormat": "p99" }
+      ],
+      "fieldConfig": { "defaults": { "unit": "s" } }
+    },
+    {
+      "title": "Task Throughput (tasks/sec)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+      "targets": [
+        { "expr": "rate(taskqueue_tasks_completed_total[5m])", "legendFormat": "completed {{task_type}}" },
+        { "expr": "rate(taskqueue_tasks_failed_total[5m])", "legendFormat": "failed {{task_type}}" },
+        { "expr": "rate(taskqueue_tasks_submitted_total[5m])", "legendFormat": "submitted {{task_type}}" }
+      ]
+    },
+    {
+      "title": "Queue Depth",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 8 },
+      "targets": [
+        { "expr": "taskqueue_queue_size", "legendFormat": "queue depth" }
+      ],
+      "fieldConfig": { "defaults": { "custom": { "fillOpacity": 30 } } }
+    },
+    {
+      "title": "Active Workers",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 4, "x": 8, "y": 8 },
+      "targets": [
+        { "expr": "taskqueue_active_workers", "legendFormat": "workers" }
+      ]
+    },
+    {
+      "title": "Total Tasks Completed",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 4, "x": 12, "y": 8 },
+      "targets": [
+        { "expr": "sum(taskqueue_tasks_completed_total)", "legendFormat": "completed" }
+      ]
+    },
+    {
+      "title": "Total Tasks Failed",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 4, "x": 16, "y": 8 },
+      "targets": [
+        { "expr": "sum(taskqueue_tasks_failed_total)", "legendFormat": "failed" }
+      ],
+      "fieldConfig": { "defaults": { "thresholds": { "steps": [{ "color": "green", "value": 0 }, { "color": "red", "value": 1 }] } } }
+    },
+    {
+      "title": "Failure Rate (%)",
+      "type": "gauge",
+      "gridPos": { "h": 4, "w": 4, "x": 20, "y": 8 },
+      "targets": [
+        { "expr": "sum(taskqueue_tasks_failed_total) / (sum(taskqueue_tasks_completed_total) + sum(taskqueue_tasks_failed_total)) * 100", "legendFormat": "failure %" }
+      ],
+      "fieldConfig": { "defaults": { "unit": "percent", "max": 100, "thresholds": { "steps": [{ "color": "green", "value": 0 }, { "color": "yellow", "value": 5 }, { "color": "red", "value": 10 }] } } }
+    },
+    {
+      "title": "Tasks by Type",
+      "type": "piechart",
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 12 },
+      "targets": [
+        { "expr": "taskqueue_tasks_submitted_total", "legendFormat": "{{task_type}}" }
+      ]
+    },
+    {
+      "title": "HTTP API Latency (p95)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 12 },
+      "targets": [
+        { "expr": "histogram_quantile(0.95, rate(http_request_duration_seconds_bucket[5m]))", "legendFormat": "p95 API" }
+      ],
+      "fieldConfig": { "defaults": { "unit": "s" } }
+    },
+    {
+      "title": "API Request Rate",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 12 },
+      "targets": [
+        { "expr": "rate(http_requests_total[5m])", "legendFormat": "{{method}} {{endpoint}}" }
+      ]
+    }
+  ],
+  "schemaVersion": 39,
+  "tags": ["taskqueue", "distributed", "monitoring"],
+  "time": { "from": "now-1h", "to": "now" },
+  "title": "Distributed Task Queue – Operations",
+  "uid": "taskqueue-ops",
+  "version": 1
+}
