@@ -4,10 +4,11 @@ Task processors – pluggable processing logic for different task types.
 Each processor implements `process(payload) -> dict` and handles one task type.
 """
 
-import time
+from __future__ import annotations
+
 import math
 import re
-from typing import Dict
+import time
 from collections import Counter
 
 
@@ -138,13 +139,16 @@ class DataProcessingProcessor(BaseProcessor):
         for item in data:
             if isinstance(item, dict) and field in item:
                 v = item[field]
-                if op == "eq" and v == value:
-                    filtered.append(item)
-                elif op == "gt" and v > value:
-                    filtered.append(item)
-                elif op == "lt" and v < value:
-                    filtered.append(item)
-                elif op == "contains" and isinstance(v, str) and value in v:
+                match = False
+                if op == "eq":
+                    match = v == value
+                elif op == "gt":
+                    match = v > value
+                elif op == "lt":
+                    match = v < value
+                elif op == "contains" and isinstance(v, str):
+                    match = value in v
+                if match:
                     filtered.append(item)
 
         return {"filtered": filtered, "count": len(filtered), "original_count": len(data)}
