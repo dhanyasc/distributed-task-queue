@@ -3,12 +3,13 @@ Database layer – PostgreSQL storage for task records.
 Uses psycopg2 for production; falls back to SQLite for local dev / testing.
 """
 
-import os
+from __future__ import annotations
+
 import json
+import os
 import sqlite3
 import threading
-from dataclasses import dataclass, field, asdict
-from typing import Optional, List
+from dataclasses import dataclass
 
 
 @dataclass
@@ -18,14 +19,14 @@ class TaskRecord:
     status: str  # pending | processing | completed | failed | cancelled
     payload: dict
     priority: int = 5
-    callback_url: Optional[str] = None
+    callback_url: str | None = None
     created_at: str = ""
-    started_at: Optional[str] = None
-    completed_at: Optional[str] = None
-    result: Optional[dict] = None
-    error: Optional[str] = None
-    processing_time_ms: Optional[float] = None
-    worker_id: Optional[str] = None
+    started_at: str | None = None
+    completed_at: str | None = None
+    result: dict | None = None
+    error: str | None = None
+    processing_time_ms: float | None = None
+    worker_id: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -78,7 +79,7 @@ class SQLiteDB:
         )
         self._conn.commit()
 
-    def get_task(self, task_id: str) -> Optional[TaskRecord]:
+    def get_task(self, task_id: str) -> TaskRecord | None:
         row = self._conn.execute("SELECT * FROM tasks WHERE task_id = ?", (task_id,)).fetchone()
         return self._row_to_record(row) if row else None
 
@@ -94,8 +95,8 @@ class SQLiteDB:
         self._conn.execute(f"UPDATE tasks SET {', '.join(sets)} WHERE task_id = ?", vals)
         self._conn.commit()
 
-    def list_tasks(self, status: Optional[str] = None, task_type: Optional[str] = None,
-                   limit: int = 50, offset: int = 0) -> List[TaskRecord]:
+    def list_tasks(self, status: str | None = None, task_type: str | None = None,
+                   limit: int = 50, offset: int = 0) -> list[TaskRecord]:
         q = "SELECT * FROM tasks WHERE 1=1"
         params: list = []
         if status:
@@ -109,7 +110,7 @@ class SQLiteDB:
         rows = self._conn.execute(q, params).fetchall()
         return [self._row_to_record(r) for r in rows]
 
-    def count_tasks(self, status: Optional[str] = None, task_type: Optional[str] = None) -> int:
+    def count_tasks(self, status: str | None = None, task_type: str | None = None) -> int:
         q = "SELECT COUNT(*) FROM tasks WHERE 1=1"
         params: list = []
         if status:
@@ -191,7 +192,7 @@ class PostgresDB:
                  t.priority, t.callback_url, t.created_at),
             )
 
-    def get_task(self, task_id: str) -> Optional[TaskRecord]:
+    def get_task(self, task_id: str) -> TaskRecord | None:
         with self._conn.cursor() as cur:
             cur.execute("SELECT * FROM tasks WHERE task_id = %s", (task_id,))
             row = cur.fetchone()
