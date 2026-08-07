@@ -1,0 +1,24 @@
+global:
+  scrape_interval: 15s
+
+scrape_configs:
+  - job_name: "taskqueue-api"
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["api:8000"]
+        labels:
+          service: "api"
+
+  - job_name: "taskqueue-workers"
+    kubernetes_sd_configs:
+      - role: pod
+        namespaces:
+          names: ["taskqueue"]
+    relabel_configs:
+      - source_labels: [__meta_kubernetes_pod_label_app]
+        regex: taskqueue-worker
+        action: keep
+      - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_port]
+        target_label: __address__
+        regex: (.+)
+        replacement: ${1}
