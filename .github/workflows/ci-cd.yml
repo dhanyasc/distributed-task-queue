@@ -1,0 +1,81 @@
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    name: Run Tests
+    runs-on: ubuntu-latest
+    services:
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: --health-cmd "redis-cli ping" --health-interval 10s --health-timeout 5s --health-retries 3
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - run: pip install -r app/requirements.txt
+      - run: cd app && pytest test_taskqueue.py -v --tb=short --junitxml=test-results.xml
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: test-results
+          path: app/test-results.xml
+
+  lint:
+    name: Code Quality
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install ruff
+      - run: ruff check app/ --output-format=github
+
+  build:
+    name: Build Docker Images
+    needs: [test, lint]
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build API image
+        run: docker build -f Dockerfile.api -t taskqueue-api:${{ github.sha }} .
+
+      - name: Build Worker image
+        run: docker build -f Dockerfile.worker -t taskqueue-worker:${{ github.sha }} .
+
+      - name: Push to registry
+        if: github.event_name == 'push'
+        run: |
+          echo "In production, push to ECR/GCR/DockerHub here"
+          echo "API:    taskqueue-api:${{ github.sha }}"
+          echo "Worker: taskqueue-worker:${{ github.sha }}"
+
+  deploy:
+    name: Deploy to Kubernetes
+    needs: [build]
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up kubectl
+        uses: azure/setup-kubectl@v3
+
+      - name: Deploy to cluster
+        run: |
+          echo "Configure kubectl with cluster credentials"
+          echo "kubectl apply -f k8s/"
+          echo "kubectl -n taskqueue rollout status deployment/taskqueue-api"
+          echo "kubectl -n taskqueue rollout status deployment/taskqueue-worker"
